@@ -221,4 +221,3 @@ MIT License — see LICENSE
 
 ---
 
-*Built for [Hackathon Name] · Team: [Your Name]*
