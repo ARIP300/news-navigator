@@ -1,4 +1,3 @@
-import json
 import re
 import os
 from datetime import datetime
@@ -8,7 +7,26 @@ from fastapi.responses import JSONResponse
 import httpx
 from dotenv import load_dotenv
 
+# ── Phase 2: Real ML/NLP imports ─────────────────────────────────────
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import spacy
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
 load_dotenv()
+
+# ── Load ML models ONCE at startup (expensive — do not load per request) ──
+print("[Startup] Loading VADER sentiment analyzer...")
+vader = SentimentIntensityAnalyzer()
+
+print("[Startup] Loading spaCy NER model (en_core_web_sm)...")
+nlp = spacy.load("en_core_web_sm")
+
+print("[Startup] Loading sentence-transformer model (all-MiniLM-L6-v2)...")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+
+print("[Startup] All ML models loaded. Server ready.")
 
 app = FastAPI(title="News Navigator AI")
 
@@ -169,38 +187,98 @@ def research_analysis(query, articles):
     }
 
 
+# ─────────────────────────── Real ML Tool Functions ───────────────────────────
+
+def embed_text(text: str) -> np.ndarray:
+    """Convert text to a 384-dimensional semantic embedding vector using SBERT."""
+    return embedder.encode([text])[0]
+
+
+def cluster_articles(articles: list, threshold: float = 0.45) -> list[list]:
+    """
+    Group articles into thematic clusters using real cosine similarity on SBERT embeddings.
+    Returns a list of clusters, each cluster being a list of article dicts.
+    """
+    if len(articles) < 2:
+        return [articles]
+
+    texts = [a.get("title", "") + " " + (a.get("description") or "") for a in articles]
+    embeddings = embedder.encode(texts)
+    sim_matrix = cosine_similarity(embeddings)
+
+    clusters = []
+    assigned = set()
+    for i in range(len(articles)):
+        if i in assigned:
+            continue
+        cluster = [articles[i]]
+        assigned.add(i)
+        for j in range(i + 1, len(articles)):
+            if j not in assigned and sim_matrix[i][j] >= threshold:
+                cluster.append(articles[j])
+                assigned.add(j)
+        clusters.append(cluster)
+    return clusters
+
+
+def extract_entities(text: str) -> dict:
+    """
+    Run spaCy Named Entity Recognition to extract real entities:
+    people, organizations, money amounts, dates, locations.
+    """
+    doc = nlp(text[:10000])  # spaCy has a token limit
+    entities = {"ORG": [], "PERSON": [], "MONEY": [], "GPE": [], "DATE": [], "PERCENT": []}
+    for ent in doc.ents:
+        if ent.label_ in entities:
+            val = ent.text.strip()
+            if val and val not in entities[ent.label_]:
+                entities[ent.label_].append(val)
+    return {k: v[:5] for k, v in entities.items() if v}  # cap at 5 per type
+
+
 def analysis_agent(query, articles):
-    titles = " ".join(
+    """
+    Phase 2: Real ML-powered analysis.
+    - VADER for sentiment (replaces word counting)
+    - sentence-transformers for embeddings (replaces ghost function)
+    - Cosine similarity clustering (replaces ghost function)
+    - spaCy NER for entity extraction (replaces ghost function)
+    """
+    full_text = " ".join(
         a.get("title", "") + " " + (a.get("description") or "")
         for a in articles
     )
-    t = titles.lower()
 
-    pos_words = ["advance", "support", "growth", "win", "positive", "success",
-                 "improve", "approve", "landmark", "record", "surge", "jump", "gain"]
-    neg_words = ["crisis", "fail", "ban", "restrict", "decline", "loss", "risk",
-                 "concern", "oppose", "challenge", "lawsuit", "fear", "drop", "slump"]
-    pos = sum(t.count(w) for w in pos_words)
-    neg = sum(t.count(w) for w in neg_words)
-    total = pos + neg + 1
-
-    if pos > neg * 1.5:
-        sentiment, score = "Positive", round(0.55 + min(pos / total, 0.4), 2)
-    elif neg > pos * 1.5:
-        sentiment, score = "Negative", round(0.55 + min(neg / total, 0.4), 2)
+    # ── Real Sentiment Analysis (VADER) ──────────────────────────────
+    vader_scores = vader.polarity_scores(full_text)
+    compound = vader_scores["compound"]  # -1.0 (most negative) to +1.0 (most positive)
+    if compound >= 0.05:
+        sentiment, score = "Positive", round(0.5 + compound / 2, 2)
+    elif compound <= -0.05:
+        sentiment, score = "Negative", round(0.5 + abs(compound) / 2, 2)
     else:
-        sentiment, score = "Neutral", 0.48
+        sentiment, score = "Neutral", round(0.5 + abs(compound) / 2, 2)
 
-    confidence = round(min(0.60 + len(articles) * 0.04, 0.96), 2)
+    # ── Real Confidence (based on source count + VADER certainty) ────
+    certainty = abs(compound)  # how strongly VADER feels
+    confidence = round(min(0.50 + len(articles) * 0.04 + certainty * 0.2, 0.97), 2)
 
+    # ── Real Clustering (sentence-transformers + cosine similarity) ──
+    clusters = cluster_articles(articles, threshold=0.45)
+
+    # ── Real NER (spaCy) ─────────────────────────────────────────────
+    entities = extract_entities(full_text)
+
+    # ── Theme detection (keyword-assisted, NER-enhanced) ─────────────
+    t = full_text.lower()
     themes = []
-    if any(w in t for w in ["bill", "law", "legislation", "senate", "congress", "policy", "budget"]):
+    if any(w in t for w in ["bill", "law", "legislation", "senate", "congress", "policy", "budget", "regulation"]):
         themes.append("Legislative / Policy")
     if any(w in t for w in ["court", "lawsuit", "legal", "aclu", "judge"]):
         themes.append("Legal / Judicial")
-    if any(w in t for w in ["market", "stock", "gdp", "economy", "rate", "inflation", "earnings", "profit"]):
+    if any(w in t for w in ["market", "stock", "gdp", "economy", "rate", "inflation", "earnings", "profit", "revenue"]):
         themes.append("Economic / Financial")
-    if any(w in t for w in ["tech", "ai", "data", "digital", "software", "startup"]):
+    if any(w in t for w in ["tech", "ai", "data", "digital", "software", "startup", "funding"]):
         themes.append("Technology")
     if any(w in t for w in ["health", "medical", "hospital", "drug", "care"]):
         themes.append("Healthcare")
@@ -212,9 +290,13 @@ def analysis_agent(query, articles):
     return {
         "sentiment": sentiment,
         "sentiment_score": score,
+        "vader_raw": vader_scores,           # expose raw VADER scores
         "confidence": confidence,
         "themes": themes,
         "article_count": len(articles),
+        "cluster_count": len(clusters),
+        "clusters": clusters,
+        "entities": entities,                # real named entities
     }
 
 
@@ -359,6 +441,12 @@ def build_logs(query, plan, research, analysis, briefing, reflection, news_sourc
     sources_preview = ", ".join(research["sources"][:3])
     nums_found = len(briefing["sections"]["important_numbers"])
     src_label = "NewsAPI (live)" if news_source == "live" else "fallback corpus"
+    compound = analysis.get("vader_raw", {}).get("compound", 0)
+    cluster_count = analysis.get("cluster_count", 1)
+    entity_count = sum(len(v) for v in analysis.get("entities", {}).values())
+    entity_preview = ", ".join(
+        f"{k}: {', '.join(v[:2])}" for k, v in list(analysis.get("entities", {}).items())[:2]
+    ) or "none detected"
 
     return [
         f"[Crew] ═══ Pipeline started for: '{query}' ═══",
@@ -377,13 +465,15 @@ def build_logs(query, plan, research, analysis, briefing, reflection, news_sourc
         f"[Research] Sources: {sources_preview}...",
         "[Research] Research complete. Passing to AnalysisAgent.",
         f"[Analysis] Received {research['articles_found']} articles for deep analysis",
-        f"[Analysis] Tool decision: embed_text=YES, clustering={'YES' if research['articles_found'] >= 4 else 'NO (insufficient data)'}, extract_entities=YES",
+        "[Analysis] Tool: embed_text() via sentence-transformers (all-MiniLM-L6-v2, 384-dim SBERT)",
         f"[Analysis] Running embed_text() on {research['articles_found']} articles...",
-        "[Analysis] Running cluster_articles() with cosine similarity threshold=0.60...",
-        f"[Analysis] Clustering complete: {len(briefing['sections']['themes'])} thematic clusters identified",
-        "[Analysis] Running extract_entities() on full corpus...",
-        f"[Analysis] Entity extraction complete: {nums_found} key figures detected",
-        f"[Analysis] Sentiment analysis: {analysis['sentiment']} (confidence={int(analysis['confidence'] * 100)}%)",
+        f"[Analysis] Embeddings generated: {research['articles_found']} × 384-dim vectors",
+        "[Analysis] Tool: cluster_articles() via cosine similarity (threshold=0.45)",
+        f"[Analysis] Clustering complete: {cluster_count} thematic clusters identified",
+        "[Analysis] Tool: extract_entities() via spaCy en_core_web_sm (NER pipeline)",
+        f"[Analysis] Entity extraction complete: {entity_count} entities — {entity_preview}",
+        "[Analysis] Tool: sentiment via VADER (Valence Aware Dictionary & sEntiment Reasoner)",
+        f"[Analysis] VADER compound score: {round(compound, 3)} → Sentiment: {analysis['sentiment']} ({int(analysis['confidence'] * 100)}% confidence)",
         f"[Analysis] Themes identified: {', '.join(analysis['themes'])}",
         "[Analysis] Analysis phase complete — passing structured data to BriefingAgent",
         "[Briefing] Synthesizing analysis into structured briefing...",
