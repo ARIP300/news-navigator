@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────
-const API_BASE = "http://localhost:5173/";
+const API_BASE = ""; // Vite proxy forwards /analyze and /chat → http://localhost:8000
 
 // ── MOCK ENGINE (when backend unavailable) ───────────────────────────
 const MOCK_ARTICLES = {

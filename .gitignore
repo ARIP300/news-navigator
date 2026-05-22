@@ -1,4 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# ── Node / Frontend ──────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# ── Byte-compiled / optimized / DLL files ────────────────────────────
 __pycache__/
 *.py[codz]
 *$py.class
